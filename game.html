@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pistol Duel - Online PvP</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(to bottom, #1a1a2e 0%, #16213e 100%);
+            font-family: 'Courier New', monospace;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 800px;
+            height: 600px;
+            background: linear-gradient(to bottom, #0f3460 0%, #533483 100%);
+            border: 4px solid #e94560;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 0 30px rgba(233, 69, 96, 0.5);
+        }
+
+        canvas {
+            display: block;
+            cursor: crosshair;
+        }
+
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 30px;
+            color: white;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+            pointer-events: none;
+        }
+
+        .health-bar {
+            width: 200px;
+            height: 30px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 2px solid #fff;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-top: 5px;
+        }
+
+        .health-fill {
+            height: 100%;
+            background: linear-gradient(to right, #00ff00, #00cc00);
+            transition: width 0.3s ease;
+        }
+
+        .player-info {
+            text-align: left;
+        }
+
+        .opponent-info {
+            text-align: right;
+        }
+
+        #statusMessage {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 40px 60px;
+            border-radius: 15px;
+            border: 3px solid #e94560;
+            text-align: center;
+            z-index: 10;
+            font-size: 24px;
+        }
+
+        #statusMessage h2 {
+            font-size: 36px;
+            margin-bottom: 20px;
+            color: #e94560;
+        }
+
+        #statusMessage button {
+            margin-top: 20px;
+            padding: 15px 40px;
+            font-size: 20px;
+            font-family: 'Courier New', monospace;
+            background: #e94560;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        #statusMessage button:hover {
+            background: #ff6b82;
+            transform: scale(1.05);
+        }
+
+        .ammo {
+            margin-top: 5px;
+            font-size: 16px;
+        }
+
+        #connectionStatus {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 10px 20px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #00ff00;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .disconnected {
+            color: #ff0000 !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        
+        <div id="connectionStatus">Connecting...</div>
+
+        <div id="ui">
+            <div class="player-info">
+                <div>YOU</div>
+                <div class="health-bar">
+                    <div class="health-fill" id="playerHealth"></div>
+                </div>
+                <div class="ammo" id="playerAmmo">Ammo: 6/6</div>
+                <div style="font-size: 12px; margin-top: 5px; opacity: 0.8;">WASD: Move | Click: Shoot</div>
+            </div>
+            <div class="opponent-info">
+                <div>OPPONENT</div>
+                <div class="health-bar">
+                    <div class="health-fill" id="opponentHealth"></div>
+                </div>
+                <div class="ammo" id="opponentAmmo">Ammo: 6/6</div>
+            </div>
+        </div>
+
+        <div id="statusMessage">
+            <h2>Connecting...</h2>
+            <p id="statusText">Connecting to server...</p>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // WebSocket connection
+        let ws;
+        let myRole = null;
+        let gameStarted = false;
+        let myPlayer = null;
+        let opponent = null;
+
+        // Game state
+        let bullets = [];
+        let particles = [];
+
+        // Connect to WebSocket server
+        function connectToServer() {
+            ws = new WebSocket('ws://localhost:3000');
+
+            ws.onopen = () => {
+                console.log('Connected to server');
+                document.getElementById('connectionStatus').textContent = 'Connected';
+                document.getElementById('connectionStatus').classList.remove('disconnected');
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleServerMessage(data);
+            };
+
+            ws.onclose = () => {
+                console.log('Disconnected from server');
+                document.getElementById('connectionStatus').textContent = 'Disconnected';
+                document.getElementById('connectionStatus').classList.add('disconnected');
+                showStatus('Disconnected', 'Connection to server lost');
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+            };
+        }
+
+        function handleServerMessage(data) {
+            switch(data.type) {
+                case 'waiting':
+                    showStatus('Waiting', data.message);
+                    break;
+                
+                case 'matched':
+                    myRole = data.role;
+                    showStatus('Matched!', 'Opponent found! Click Ready to start');
+                    document.getElementById('statusMessage').innerHTML = `
+                        <h2>Opponent Found!</h2>
+                        <p>You are ${myRole === 'player1' ? 'Player 1 (Left)' : 'Player 2 (Right)'}</p>
+                        <button onclick="sendReady()">READY</button>
+                    `;
+                    initializePlayers();
+                    break;
+                
+                case 'gameStart':
+                    gameStarted = true;
+                    hideStatus();
+                    break;
+                
+                case 'stateUpdate':
+                    updateGameState(data);
+                    break;
+                
+                case 'playerShoot':
+                    handleOpponentShoot(data);
+                    break;
+                
+                case 'playerHit':
+                    handlePlayerHit(data);
+                    break;
+                
+                case 'playerReload':
+                    handlePlayerReload(data);
+                    break;
+                
+                case 'gameOver':
+                    handleGameOver(data);
+                    break;
+                
+                case 'playerDisconnected':
+                    showStatus('Opponent Left', data.message);
+                    gameStarted = false;
+                    break;
+            }
+        }
+
+        function initializePlayers() {
+            if (myRole === 'player1') {
+                myPlayer = {
+                    x: 100,
+                    y: 300,
+                    baseX: 100,
+                    baseY: 300,
+                    angle: 0,
+                    health: 100,
+                    ammo: 6,
+                    velX: 0,
+                    velY: 0,
+                    moveSpeed: 5,
+                    recoilOffsetX: 0,
+                    recoilOffsetY: 0,
+                    recoilVelX: 0,
+                    recoilVelY: 0,
+                    recoilAngle: 0,
+                    recoilVelocity: 0,
+                    shootCooldown: 0,
+                    reloadTime: 0
+                };
+                opponent = {
+                    x: 700,
+                    y: 300,
+                    angle: Math.PI,
+                    health: 100,
+                    ammo: 6
+                };
+            } else {
+                myPlayer = {
+                    x: 700,
+                    y: 300,
+                    baseX: 700,
+                    baseY: 300,
+                    angle: Math.PI,
+                    health: 100,
+                    ammo: 6,
+                    velX: 0,
+                    velY: 0,
+                    moveSpeed: 5,
+                    recoilOffsetX: 0,
+                    recoilOffsetY: 0,
+                    recoilVelX: 0,
+                    recoilVelY: 0,
+                    recoilAngle: 0,
+                    recoilVelocity: 0,
+                    shootCooldown: 0,
+                    reloadTime: 0
+                };
+                opponent = {
+                    x: 100,
+                    y: 300,
+                    angle: 0,
+                    health: 100,
+                    ammo: 6
+                };
+            }
+            updateHealthBars();
+        }
+
+        function sendReady() {
+            ws.send(JSON.stringify({ type: 'ready' }));
+            showStatus('Ready!', 'Waiting for opponent...');
+        }
+
+        function showStatus(title, message) {
+            document.getElementById('statusMessage').style.display = 'block';
+            document.getElementById('statusMessage').innerHTML = `
+                <h2>${title}</h2>
+                <p>${message}</p>
+            `;
+        }
+
+        function hideStatus() {
+            document.getElementById('statusMessage').style.display = 'none';
+        }
+
+        // Keyboard input
+        const keys = {};
+        window.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+
+        // Mouse controls
+        canvas.addEventListener('mousemove', (e) => {
+            if (!myPlayer) return;
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const dx = mouseX - myPlayer.x;
+            const dy = mouseY - myPlayer.y;
+            myPlayer.angle = Math.atan2(dy, dx);
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'aim',
+                    angle: myPlayer.angle
+                }));
+            }
+        });
+
+        canvas.addEventListener('click', () => {
+            if (!gameStarted || !myPlayer) return;
+            shoot();
+        });
+
+        function shoot() {
+            if (myPlayer.shootCooldown > 0 || myPlayer.reloadTime > 0 || myPlayer.ammo <= 0) {
+                return;
+            }
+
+            myPlayer.ammo--;
+            myPlayer.shootCooldown = 500;
+
+            // Play gunshot sound
+            playGunshot();
+
+            // Apply recoil
+            myPlayer.recoilVelocity = 0.3;
+            const recoilForce = 8;
+            const recoilVelX = -Math.cos(myPlayer.angle + myPlayer.recoilAngle) * recoilForce;
+            const recoilVelY = -Math.sin(myPlayer.angle + myPlayer.recoilAngle) * recoilForce;
+            
+            myPlayer.recoilVelX += recoilVelX;
+            myPlayer.recoilVelY += recoilVelY;
+
+            // Create bullet
+            const bulletX = myPlayer.x + Math.cos(myPlayer.angle + myPlayer.recoilAngle) * 50;
+            const bulletY = myPlayer.y + Math.sin(myPlayer.angle + myPlayer.recoilAngle) * 50;
+            
+            bullets.push(new Bullet(bulletX, bulletY, myPlayer.angle + myPlayer.recoilAngle, true));
+
+            // Muzzle flash
+            for (let i = 0; i < 8; i++) {
+                particles.push(new Particle(bulletX + Math.random() * 10 - 5, bulletY + Math.random() * 10 - 5));
+            }
+
+            // Send to server
+            ws.send(JSON.stringify({
+                type: 'shoot',
+                bulletX: bulletX,
+                bulletY: bulletY,
+                angle: myPlayer.angle + myPlayer.recoilAngle,
+                recoilVelX: recoilVelX,
+                recoilVelY: recoilVelY
+            }));
+
+            updateAmmo();
+
+            // Auto reload
+            if (myPlayer.ammo <= 0) {
+                myPlayer.reloadTime = 2000;
+                playReload();
+            }
+        }
+
+        function handleOpponentShoot(data) {
+            if ((myRole === 'player1' && data.playerId === 'player2') ||
+                (myRole === 'player2' && data.playerId === 'player1')) {
+                
+                playGunshot();
+                bullets.push(new Bullet(data.bulletX, data.bulletY, data.angle, false));
+                
+                for (let i = 0; i < 8; i++) {
+                    particles.push(new Particle(data.bulletX + Math.random() * 10 - 5, data.bulletY + Math.random() * 10 - 5));
+                }
+                
+                opponent.ammo = data.ammo;
+                updateAmmo();
+            }
+        }
+
+        function handlePlayerHit(data) {
+            const isMe = (myRole === 'player1' && data.playerId === 'player1') ||
+                         (myRole === 'player2' && data.playerId === 'player2');
+            
+            if (isMe) {
+                myPlayer.health = data.health;
+            } else {
+                opponent.health = data.health;
+            }
+            updateHealthBars();
+        }
+
+        function handlePlayerReload(data) {
+            if ((myRole === 'player1' && data.playerId === 'player2') ||
+                (myRole === 'player2' && data.playerId === 'player1')) {
+                playReload();
+                opponent.ammo = data.ammo;
+                updateAmmo();
+            }
+        }
+
+        function handleGameOver(data) {
+            gameStarted = false;
+            const won = (myRole === data.winner);
+            showStatus(won ? 'VICTORY!' : 'DEFEATED!', won ? 'You won the duel!' : 'Better luck next time!');
+        }
+
+        function updateGameState(data) {
+            if (!opponent) return;
+
+            const opponentData = myRole === 'player1' ? data.player2 : data.player1;
+            opponent.x = opponentData.x;
+            opponent.y = opponentData.y;
+            opponent.angle = opponentData.angle;
+            opponent.health = opponentData.health;
+            opponent.ammo = opponentData.ammo;
+        }
+
+        class Bullet {
+            constructor(x, y, angle, isMine) {
+                this.x = x;
+                this.y = y;
+                this.angle = angle;
+                this.speed = 12;
+                this.radius = 4;
+                this.isMine = isMine;
+                this.active = true;
+            }
+
+            update() {
+                this.x += Math.cos(this.angle) * this.speed;
+                this.y += Math.sin(this.angle) * this.speed;
+
+                if (this.x < 0 || this.x > canvas.width || this.y < 0 || this.y > canvas.height) {
+                    this.active = false;
+                }
+
+                // Check collision
+                if (this.isMine && opponent) {
+                    const dx = this.x - opponent.x;
+                    const dy = this.y - opponent.y;
+                    if (Math.sqrt(dx * dx + dy * dy) < 30) {
+                        this.active = false;
+                        createHitParticles(this.x, this.y);
+                        ws.send(JSON.stringify({ type: 'hit' }));
+                    }
+                } else if (!this.isMine && myPlayer) {
+                    const dx = this.x - myPlayer.x;
+                    const dy = this.y - myPlayer.y;
+                    if (Math.sqrt(dx * dx + dy * dy) < 30) {
+                        this.active = false;
+                        createHitParticles(this.x, this.y);
+                    }
+                }
+            }
+
+            draw() {
+                ctx.fillStyle = this.isMine ? '#ffff00' : '#ff0000';
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.strokeStyle = this.isMine ? 'rgba(255, 255, 0, 0.3)' : 'rgba(255, 0, 0, 0.3)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(this.x, this.y);
+                ctx.lineTo(this.x - Math.cos(this.angle) * 15, this.y - Math.sin(this.angle) * 15);
+                ctx.stroke();
+            }
+        }
+
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.vx = (Math.random() - 0.5) * 6;
+                this.vy = (Math.random() - 0.5) * 6;
+                this.life = 1;
+                this.decay = 0.02;
+                this.size = Math.random() * 4 + 2;
+            }
+
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += 0.2;
+                this.life -= this.decay;
+            }
+
+            draw() {
+                ctx.fillStyle = `rgba(255, ${100 + this.life * 155}, 0, ${this.life})`;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size * this.life, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function createHitParticles(x, y) {
+            for (let i = 0; i < 15; i++) {
+                particles.push(new Particle(x, y));
+            }
+        }
+
+        function drawPistol(pistol, isMe) {
+            ctx.save();
+            ctx.translate(pistol.x, pistol.y);
+            ctx.rotate(pistol.angle + (pistol.recoilAngle || 0));
+
+            ctx.fillStyle = isMe ? '#4a4a4a' : '#6a0000';
+            ctx.fillRect(-20, -15, 50, 30);
+
+            ctx.fillStyle = isMe ? '#2a2a2a' : '#3a0000';
+            ctx.fillRect(30, -8, 30, 16);
+
+            ctx.fillRect(-25, -5, 10, 35);
+
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(10, -10, 15, 20);
+
+            ctx.fillStyle = '#ffaa00';
+            ctx.fillRect(-5, 10, 8, 12);
+
+            ctx.restore();
+        }
+
+        function updateHealthBars() {
+            if (!myPlayer || !opponent) return;
+            
+            const myHealthPercent = (myPlayer.health / 100) * 100;
+            const opponentHealthPercent = (opponent.health / 100) * 100;
+            
+            document.getElementById('playerHealth').style.width = Math.max(0, myHealthPercent) + '%';
+            document.getElementById('opponentHealth').style.width = Math.max(0, opponentHealthPercent) + '%';
+        }
+
+        function updateAmmo() {
+            if (!myPlayer || !opponent) return;
+            document.getElementById('playerAmmo').textContent = `Ammo: ${myPlayer.ammo}/6`;
+            document.getElementById('opponentAmmo').textContent = `Ammo: ${opponent.ammo}/6`;
+        }
+
+        // Sound effects
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playGunshot() {
+            const now = audioContext.currentTime;
+            
+            const noise = audioContext.createBufferSource();
+            const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 0.1, audioContext.sampleRate);
+            const noiseData = noiseBuffer.getChannelData(0);
+            
+            for (let i = 0; i < noiseBuffer.length; i++) {
+                noiseData[i] = Math.random() * 2 - 1;
+            }
+            noise.buffer = noiseBuffer;
+            
+            const filter = audioContext.createBiquadFilter();
+            filter.type = 'bandpass';
+            filter.frequency.setValueAtTime(800, now);
+            filter.Q.setValueAtTime(1, now);
+            
+            const gainNode = audioContext.createGain();
+            gainNode.gain.setValueAtTime(0.3, now);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+            
+            noise.connect(filter);
+            filter.connect(gainNode);
+            gainNode.connect(audioContext.destination);
+            
+            noise.start(now);
+            noise.stop(now + 0.1);
+        }
+
+        function playReload() {
+            const now = audioContext.currentTime;
+            
+            const click1 = audioContext.createOscillator();
+            click1.frequency.setValueAtTime(200, now);
+            const click1Gain = audioContext.createGain();
+            click1Gain.gain.setValueAtTime(0.1, now);
+            click1Gain.gain.exponentialRampToValueAtTime(0.01, now + 0.02);
+            click1.connect(click1Gain);
+            click1Gain.connect(audioContext.destination);
+            click1.start(now);
+            click1.stop(now + 0.02);
+        }
+
+        let lastTime = 0;
+        function gameLoop(timestamp) {
+            const deltaTime = timestamp - lastTime;
+            lastTime = timestamp;
+
+            ctx.fillStyle = 'rgba(15, 52, 96, 0.3)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            if (gameStarted && myPlayer) {
+                // Handle movement
+                if (keys['w'] || keys['arrowup']) myPlayer.velY = -myPlayer.moveSpeed;
+                else if (keys['s'] || keys['arrowdown']) myPlayer.velY = myPlayer.moveSpeed;
+                else myPlayer.velY *= 0.8;
+
+                if (keys['a'] || keys['arrowleft']) myPlayer.velX = -myPlayer.moveSpeed;
+                else if (keys['d'] || keys['arrowright']) myPlayer.velX = myPlayer.moveSpeed;
+                else myPlayer.velX *= 0.8;
+
+                myPlayer.baseX += myPlayer.velX;
+                myPlayer.baseY += myPlayer.velY;
+
+                // Wall collision
+                const margin = 40;
+                if (myPlayer.baseX < margin) {
+                    myPlayer.baseX = margin;
+                    myPlayer.velX = Math.abs(myPlayer.velX) * 0.5;
+                }
+                if (myPlayer.baseX > canvas.width - margin) {
+                    myPlayer.baseX = canvas.width - margin;
+                    myPlayer.velX = -Math.abs(myPlayer.velX) * 0.5;
+                }
+                if (myPlayer.baseY < margin) {
+                    myPlayer.baseY = margin;
+                    myPlayer.velY = Math.abs(myPlayer.velY) * 0.5;
+                }
+                if (myPlayer.baseY > canvas.height - margin) {
+                    myPlayer.baseY = canvas.height - margin;
+                    myPlayer.velY = -Math.abs(myPlayer.velY) * 0.5;
+                }
+
+                // Update recoil
+                myPlayer.recoilOffsetX += myPlayer.recoilVelX;
+                myPlayer.recoilOffsetY += myPlayer.recoilVelY;
+                myPlayer.recoilVelX *= 0.92;
+                myPlayer.recoilVelY *= 0.92;
+                myPlayer.recoilOffsetX *= 0.90;
+                myPlayer.recoilOffsetY *= 0.90;
+
+                if (Math.abs(myPlayer.recoilOffsetX) < 0.1) myPlayer.recoilOffsetX = 0;
+                if (Math.abs(myPlayer.recoilOffsetY) < 0.1) myPlayer.recoilOffsetY = 0;
+
+                myPlayer.x = myPlayer.baseX + myPlayer.recoilOffsetX;
+                myPlayer.y = myPlayer.baseY + myPlayer.recoilOffsetY;
+
+                // Recoil angle
+                if (myPlayer.recoilVelocity > 0) {
+                    myPlayer.recoilAngle += myPlayer.recoilVelocity;
+                    myPlayer.recoilVelocity -= 0.02;
+                } else {
+                    myPlayer.recoilAngle *= 0.85;
+                    if (Math.abs(myPlayer.recoilAngle) < 0.01) myPlayer.recoilAngle = 0;
+                }
+
+                // Cooldowns
+                myPlayer.shootCooldown = Math.max(0, myPlayer.shootCooldown - deltaTime);
+                if (myPlayer.reloadTime > 0) {
+                    myPlayer.reloadTime -= deltaTime;
+                    if (myPlayer.reloadTime <= 0) {
+                        myPlayer.ammo = 6;
+                        updateAmmo();
+                    }
+                }
+
+                // Send position update
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'move',
+                        baseX: myPlayer.baseX,
+                        baseY: myPlayer.baseY,
+                        velX: myPlayer.velX,
+                        velY: myPlayer.velY
+                    }));
+                }
+
+                // Update bullets
+                bullets = bullets.filter(bullet => {
+                    bullet.update();
+                    return bullet.active;
+                });
+
+                // Update particles
+                particles = particles.filter(particle => {
+                    particle.update();
+                    return particle.life > 0;
+                });
+            }
+
+            // Draw everything
+            particles.forEach(particle => particle.draw());
+            bullets.forEach(bullet => bullet.draw());
+            
+            if (myPlayer) drawPistol(myPlayer, true);
+            if (opponent) drawPistol(opponent, false);
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Start the game
+        connectToServer();
+        requestAnimationFrame(gameLoop);
+    </script>
+</body>
+</html>

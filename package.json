@@ -1,0 +1,12 @@
+{
+  "name": "pistol-duel-multiplayer",
+  "version": "1.0.0",
+  "description": "Online multiplayer pistol duel game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  }
+}
